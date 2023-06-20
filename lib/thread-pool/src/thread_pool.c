@@ -4,8 +4,11 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #include "../include/thread_pool.h"
+
+#define ERROR_MESSAGE_LENGTH 24
 
 typedef struct job_queue_t
 {
@@ -21,6 +24,7 @@ typedef struct threadpool
     pthread_mutex_t resource_lock;
     pthread_cond_t  notify_threads;
     int             threads_in_pool;
+    int             thread_capacity;
     int             threads_running;
     int             job_queue_front;
     int             job_queue_rear;
@@ -41,14 +45,15 @@ thpool_init(int num_threads)
     }
 
     pool->threads_in_pool = num_threads;
+    pool->thread_capacity = num_threads;
 
     pool->p_thread_object    = calloc(num_threads, sizeof(pthread_t));
     pool->p_job_queue        = calloc(num_threads, sizeof(job_queue_t));
     pool->pb_should_shutdown = calloc(1, sizeof(_Atomic bool));
     pool->pb_should_pause    = calloc(1, sizeof(_Atomic bool));
 
-    if (!pool->p_thread_object || !pool->p_job_queue
-        || !pool->pb_should_shutdown || !pool->pb_should_pause)
+    if (!(pool->p_thread_object) || !(pool->p_job_queue)
+        || !(pool->pb_should_shutdown) || !(pool->pb_should_pause))
     {
         perror("Failed to allocate memory for thread objects or job queue");
         return NULL;
@@ -59,10 +64,10 @@ thpool_init(int num_threads)
     *pool->pb_should_shutdown = false;
     *pool->pb_should_pause    = false;
 
-    for (int i = 0; i < num_threads; i++)
+    for (int idx = 0; idx < num_threads; idx++)
     {
         pthread_create(
-            &pool->p_thread_object[i], NULL, thpool_worker, (void *)pool);
+            &pool->p_thread_object[idx], NULL, thpool_worker, (void *)pool);
     }
 
     return pool;
@@ -90,7 +95,7 @@ thpool_add_work(threadpool_t * pool, job_f function, void * arg)
     pool->job_queue_rear = (pool->job_queue_rear + 1) % pool->threads_in_pool;
     pool->jobs_in_queue++;
 
-    pthread_cond_signal(&pool->notify_threads);
+    pthread_cond_broadcast(&pool->notify_threads);
     pthread_mutex_unlock(&pool->resource_lock);
 
     return 0;
@@ -100,16 +105,12 @@ void *
 thpool_worker(void * thpool)
 {
     threadpool_t * pool = (threadpool_t *)thpool;
-    while (true)
+    while (!(*pool->pb_should_shutdown))
     {
         pthread_mutex_lock(&pool->resource_lock);
 
-        while (*pool->pb_should_pause && !*pool->pb_should_shutdown)
-        {
-            pthread_cond_wait(&pool->notify_threads, &pool->resource_lock);
-        }
-
-        while (pool->jobs_in_queue == 0 && !*pool->pb_should_shutdown)
+        while ((*pool->pb_should_pause || pool->jobs_in_queue == 0)
+               && !(*pool->pb_should_shutdown))
         {
             pthread_cond_wait(&pool->notify_threads, &pool->resource_lock);
         }
@@ -123,29 +124,28 @@ thpool_worker(void * thpool)
         // Check the pause flag
         if (*pool->pb_should_pause)
         {
-            // pthread_mutex_unlock(&pool->resource_lock);
+            pthread_mutex_unlock(&pool->resource_lock);
             continue;
         }
 
-        job_f  function = pool->p_job_queue[pool->job_queue_front].functions;
-        void * arg      = pool->p_job_queue[pool->job_queue_front].p_arguments;
+        job_queue_t job = pool->p_job_queue[pool->job_queue_front];
+
         pool->job_queue_front
             = (pool->job_queue_front + 1) % pool->threads_in_pool;
         pool->jobs_in_queue--;
         pool->threads_running++;
-        printf("Still Running: %d\n", pool->threads_running);
 
         pthread_mutex_unlock(&pool->resource_lock);
 
-        function(pool->pb_should_shutdown, arg);
+        job.functions(pool->pb_should_shutdown, job.p_arguments);
 
         pthread_mutex_lock(&pool->resource_lock);
         pool->threads_running--;
-        printf("Still Running: %d\n", pool->threads_running);
-        pthread_cond_signal(&pool->notify_threads);
+
+        pthread_cond_broadcast(&pool->notify_threads);
         pthread_mutex_unlock(&pool->resource_lock);
     }
-    printf("I made it.");
+
     pthread_mutex_lock(&pool->resource_lock);
     pool->threads_in_pool--;
     pthread_mutex_unlock(&pool->resource_lock);
@@ -205,14 +205,14 @@ thpool_destroy(void * thpool)
         return;
     }
 
-    free(pool->pb_should_shutdown);
-    free(pool->pb_should_pause);
     free(pool->p_thread_object);
     free(pool->p_job_queue);
 
+    free(pool->pb_should_shutdown);
+    free(pool->pb_should_pause);
+
     pthread_mutex_destroy(&pool->resource_lock);
     pthread_cond_destroy(&pool->notify_threads);
-
     free(pool);
 }
 
@@ -246,7 +246,7 @@ void
 thpool_shutdown(void * thpool)
 {
     threadpool_t * pool = (threadpool_t *)thpool;
-    if (!pool)
+    if (!pool || *pool->pb_should_shutdown)
     {
         return;
     }
@@ -255,11 +255,30 @@ thpool_shutdown(void * thpool)
     pthread_cond_broadcast(&pool->notify_threads);
     pthread_mutex_unlock(&pool->resource_lock);
 
-    for (int i = 0; i < pool->threads_in_pool; i++)
+    int    join_result = 0;
+    void * pthread_ret = NULL;
+    for (int idx = 0; idx < pool->thread_capacity; idx++)
     {
-        pthread_join(pool->p_thread_object[i], NULL);
+
+        join_result = pthread_join(pool->p_thread_object[idx], &pthread_ret);
+
+        if (join_result != 0)
+        {
+            char error_msg[ERROR_MESSAGE_LENGTH];
+            snprintf(error_msg,
+                     ERROR_MESSAGE_LENGTH,
+                     "Error joining thread %d",
+                     idx);
+            perror(error_msg);
+        }
+        free(pthread_ret);
     }
-    thpool_destroy(thpool);
+
+    while (pool->threads_in_pool > 0)
+    {
+        usleep(1000); // sleep for 1ms
+    }
+    thpool_destroy(pool);
 }
 
 int
@@ -269,7 +288,7 @@ thpool_num_threads_working(threadpool_t * pool)
     {
         return -1;
     }
-    int num_threads_working;
+    int num_threads_working = 0;
 
     pthread_mutex_lock(&pool->resource_lock);
     num_threads_working = pool->threads_running;
@@ -277,3 +296,58 @@ thpool_num_threads_working(threadpool_t * pool)
 
     return num_threads_working;
 }
+
+#ifndef _MAIN_EXCLUDED_
+// Define the work that will be done by the thread.
+// Thread safe printf
+void
+safe_printf(void * format)
+{
+
+    pthread_mutex_t print_lock;
+
+    pthread_mutex_init(&print_lock, NULL);
+
+    // Lock
+    pthread_mutex_lock(&print_lock);
+
+    // Write
+    fprintf(stdout, "Hey %s!\n", (char *)format);
+
+    // Unlock
+    pthread_mutex_unlock(&print_lock);
+    pthread_mutex_destroy(&print_lock);
+}
+
+int
+main()
+{
+    // Create a threadpool with 4 threads.
+    threadpool_t * pool = thpool_init(4);
+    if (!pool)
+    {
+        fprintf(stderr, "Failed to create thread pool.\n");
+        return 1;
+    }
+
+    // Add some jobs to the pool.
+    const char * names[] = { "Alice", "Bob", "Charlie", "Dave" };
+    for (int idx = 0; idx < 4; idx++)
+    {
+        if (thpool_add_work(pool, safe_printf, (void *)names[idx]) != 0)
+        {
+            fprintf(stderr, "Failed to add job to thread pool.\n");
+            thpool_shutdown(pool);
+            return 1;
+        }
+    }
+
+    // Wait for all jobs to finish.
+    thpool_wait(pool);
+
+    // Shutdown the thread pool.
+    thpool_shutdown(pool);
+
+    return 0;
+}
+#endif

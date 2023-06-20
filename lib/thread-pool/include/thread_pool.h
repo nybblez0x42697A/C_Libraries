@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-typedef void (*job_f)(_Atomic bool * should_shutdown, void * arg);
+typedef void (*job_f)(void * arg);
 
 typedef struct threadpool threadpool_t;
 pthread_mutex_t           cleanup_mutex;

@@ -16,7 +16,7 @@ typedef struct MemoryBlock_Tag
     void *       ptr;  /**< Pointer to the allocated memory block. */
     size_t       size; /**< Size of the allocated memory block in bytes. */
     const char * file; /**< File name where the memory block was allocated. */
-    int          line; /**< Line number where the memory block was allocated. */
+    int line; /**< Line number where the memory block was allocated. */
     struct MemoryBlock_Tag * next; /**< Next MemoryBlock in the linked list. */
 } MemoryBlock_T;
 
@@ -152,7 +152,7 @@ CustomClean(void)
 
 Example usage
 --------------------------------------------------------------------------*/
-#ifdef _MAIN_EXCLUDED
+#ifndef _MAIN_EXCLUDED
 int
 main(void)
 {
@@ -163,6 +163,7 @@ main(void)
                                        demonstrate memory leak detection */
     FREE(arr);
     strcpy(str, "hello");
+    FREE(str);
 
     /* Print memory leaks before the program exits */
     PrintMemoryLeaks();

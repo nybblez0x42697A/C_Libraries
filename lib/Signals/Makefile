@@ -31,9 +31,11 @@ SRCS := $(wildcard $(addsuffix /*.c, $(SRC_DIR)))
 
 OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(notdir $(SRCS)))
 
-BIN := $(patsubst %.c,$(BIN_DIR)/lib%.so, $(notdir $(SRCS)))
+BIN := $(BIN_DIR)/$(SRCS:$(SRC_DIR)/%.c=%)
 
-CHECK := $(subst lib,,$(BIN)_check)
+LIB_BIN := $(patsubst %,$(BIN_DIR)/lib%.so, $(notdir $(BIN)))
+
+CHECK := $(subst lib,,$(LIB_BIN)_check)
 
 ifeq ($(shell find . -type d -name "test"), $(TST_DIR))
 	TSTS := $(shell find $(TST_DIR) -type f -name "*.c")
@@ -61,18 +63,13 @@ BIN_ARGS :=
 
 #-------- Targets ---------#
 
-help: ## print this help menu
-	@printf "\nusage: make <commands> \n\nthe following commands are available : \n\n"
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / { sub("\\\\n",sprintf("\n%*s", 31, "")); printf "\033[36m%-30s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@printf "\n"
-
-all: $(OBJS) $(BIN) ## Compile all library objects and link them to produce a shared library
+all: $(OBJS) $(LIB_BIN) $(BIN) ## Compile all library objects and link them to produce a shared library
 
 ## Build the executable and run tests
 check: $(CHECK)
 
 clean: ## Clean up the objects and binaries to start a fresh build
-	rm -rf $(OBJ_DIR) $(TST_OBJ_DIR) $(BIN_DIR) error.log > /dev/null
+	@rm -rf $(OBJ_DIR) $(TST_OBJ_DIR) $(BIN_DIR) error.log
 
 debug: CFLAGS += -D__DEBUG__
 debug: clean all ## Run gdb against the executable
@@ -91,18 +88,18 @@ valgrind: VALGRIND_FLAGS := --tool=memcheck --error-exitcode=1
 valgrind: VALGRIND_FLAGS += --leak-check=full --show-leak-kinds=all
 valgrind: VALGRIND_FLAGS += --show-reachable=yes --track-origins=yes
 valgrind: CFLAGS += -D__DEBUG__
-valgrind: clean $(BIN) ## Run the library against valgrind
+valgrind: clean all ## Run the library against valgrind
 	@valgrind $(VALGRIND_FLAGS) -s ./$(BIN) $(BIN_ARGS)
 
 helgrind: VALGRIND_FLAGS += --tool=helgrind
 helgrind: CFLAGS += -D__DEBUG__
-helgrind: clean $(BIN) ## Run the library against helgrind
+helgrind: all ## Run the library against helgrind
 	@valgrind $(VALGRIND_FLAGS) -s ./$(BIN) $(EXE_ARGS)
 
-symbols: $(BIN) ## List the symbol table for this library
+symbols: $(LIB_BIN) ## List the symbol table for this library
 	nm -D $^
 
-depend: $(BIN) ## List all dependencies for this library
+depend: $(LIB_BIN) ## List all dependencies for this library
 	ldd $^
 
 # Static pattern rule to run any original recipe silently
@@ -120,24 +117,27 @@ $(1).is: %.is: ## Run the original recipe with --ignore-errors and -s to silence
 
 # Directory creation rule
 $(OBJ_DIR) $(BIN_DIR):
-	@mkdir -p $@
+	@mkdir -p $@ > /dev/null
 
 # Add dependencies for object files
 $(OBJS): $(OBJ_DIR)
 # General pattern rule for building object files
 $(OBJS): obj/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -fPIC -o $@
+	@mkdir -p $(dir $@) > /dev/null
+	@$(CC) $(CFLAGS) -c $< -fPIC -o $@ $(LIB_FLAGS)
 	 
 
 # Rule for building shared library
-$(BIN): LIB_FLAGS += -D_MAIN_EXCLUDED
-$(BIN): %.so: $(OBJS) $(BIN_DIR)
-	echo "Building library: $$lib_makefile"
-	$(CC) $(CFLAGS) -shared $< -o $@ $(LIB_FLAGS)
+$(LIB_BIN): LIB_FLAGS += -D_MAIN_EXCLUDED
+$(LIB_BIN): %.so: $(OBJS) $(BIN_DIR)
+	@$(CC) $(CFLAGS) -shared $< -o $@ $(LIB_FLAGS)
+
+$(BIN): $(filter-out $(wildcard *.so), $(OBJS))
+
+	@$(CC) $(CFLAGS) $^ -o $@ $(LIB_FLAGS)
 
 $(CHECK): $(TST_OBJS) $(LIB_OBJS)
-	$(info making $(CHECK) with these flags: $(CFLAGS) $(LIB_FLAGS))
+
 	@$(CC) $(CFLAGS) $(TST_FLAGS) $^ -o $@ $(TST_LIBS) $(TST_FLAGS) $(LIB_FLAGS) $(LIBS)
 	@./$(CHECK)
 
@@ -146,6 +146,11 @@ $(CHECK): $(TST_OBJS) $(LIB_OBJS)
 output: ## show all variable values
 	$(info SRCS = $(SRCS))
 	$(info OBJS = $(OBJS))
-	$(info BIN = $(BIN))
+	$(info BIN = $(LIB_BIN))
 	$(info CHECK = $(CHECK))
+
+help: ## print this help menu
+	@printf "\nusage: make <commands> \n\nthe following commands are available : \n\n"
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / { sub("\\\\n",sprintf("\n%*s", 31, "")); printf "\033[36m%-30s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@printf "\n"
 
