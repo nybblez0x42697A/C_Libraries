@@ -73,48 +73,137 @@ get_server_address_info(int                       sockfd,
 }
 
 server_t *
-server_create(int protocol_flags)
+server_create(void)
 {
-    server_t * server  = calloc(1, sizeof(server_t));
+    server_t * server;
+
+    server = calloc(1, sizeof(server_t));
+    if (NULL == server)
+    {
+        perror("Could not allocate memory for server");
+        return NULL;
+    }
+
     server->tcp_sockfd = -1;
     server->udp_sockfd = -1;
+    memset(&(server->address), 0, sizeof(server->address));
+    server->addr_len = sizeof(server->address);
 
-    if (protocol_flags & SOCK_STREAM)
-    {
-        server->tcp_sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (server->tcp_sockfd < 0)
-        {
-            perror("Could not create TCP socket");
-            goto TCP_ERROR;
-        }
-    }
+    memset(&(server->udp_address), 0, sizeof(server->udp_address));
+    server->udp_addr_len = sizeof(server->udp_address);
 
-    if (protocol_flags & SOCK_DGRAM)
-    {
-        server->udp_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (server->udp_sockfd < 0)
-        {
-            perror("Could not create UDP socket");
-            if (server->tcp_sockfd >= 0)
-            {
-                goto UDP_ERROR;
-            }
-            else
-            {
-                goto TCP_ERROR;
-            }
-        }
-    }
-    goto EXIT;
-
-UDP_ERROR:
-    close(server->tcp_sockfd);
-
-TCP_ERROR:
-    free(server);
-
-EXIT:
     return server;
+}
+
+int
+server_listen(server_t * server, const char * host, const char * service)
+{
+    struct addrinfo   hints;
+    struct addrinfo * res = NULL;
+    int               err;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = 0;
+    hints.ai_flags    = AI_PASSIVE;
+
+    if ((err = getaddrinfo(host, service, &hints, &res)) != 0)
+    {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
+        return -1;
+    }
+
+    struct addrinfo * p;
+    for (p = res; p != NULL; p = p->ai_next)
+    {
+        if (p->ai_socktype == SOCK_STREAM)
+        {
+            server->tcp_sockfd
+                = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+            if (server->tcp_sockfd == -1)
+            {
+                perror("Could not create TCP socket");
+                continue;
+            }
+
+            int optval = 1;
+            setsockopt(server->tcp_sockfd,
+                       SOL_SOCKET,
+                       SO_REUSEADDR,
+                       &optval,
+                       sizeof(optval));
+            setsockopt(server->tcp_sockfd,
+                       SOL_SOCKET,
+                       SO_REUSEPORT,
+                       &optval,
+                       sizeof(optval));
+
+            if (bind(server->tcp_sockfd, p->ai_addr, p->ai_addrlen) < 0)
+            {
+                perror("Could not bind TCP socket to address");
+                close(server->tcp_sockfd);
+                server->tcp_sockfd = -1;
+                continue;
+            }
+
+            if (listen(server->tcp_sockfd, 10) < 0)
+            {
+                perror("Could not listen on TCP socket");
+                close(server->tcp_sockfd);
+                server->tcp_sockfd = -1;
+                continue;
+            }
+
+            get_server_address_info(
+                server->tcp_sockfd, &(server->address), &(server->addr_len));
+        }
+        else if (p->ai_socktype == SOCK_DGRAM)
+        {
+            server->udp_sockfd
+                = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+            if (server->udp_sockfd == -1)
+            {
+                perror("Could not create UDP socket");
+                continue;
+            }
+
+            int optval = 1;
+            setsockopt(server->udp_sockfd,
+                       SOL_SOCKET,
+                       SO_REUSEADDR,
+                       &optval,
+                       sizeof(optval));
+            setsockopt(server->udp_sockfd,
+                       SOL_SOCKET,
+                       SO_REUSEPORT,
+                       &optval,
+                       sizeof(optval));
+
+            if (bind(server->udp_sockfd, p->ai_addr, p->ai_addrlen) < 0)
+            {
+                perror("Could not bind UDP socket to address");
+                close(server->udp_sockfd);
+                server->udp_sockfd = -1;
+                continue;
+            }
+
+            // Copy the UDP address information to the server structure
+            memcpy(&(server->udp_address), p->ai_addr, p->ai_addrlen);
+            server->udp_addr_len = p->ai_addrlen;
+        }
+    }
+
+    if (server->tcp_sockfd == -1 && server->udp_sockfd == -1)
+    {
+        fprintf(stderr, "Could not bind socket to any address\n");
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    freeaddrinfo(res);
+
+    print_server_info(server);
+    return 0;
 }
 
 void
@@ -130,86 +219,6 @@ server_destroy(server_t * server)
     }
     free(server);
     server = NULL;
-}
-
-int
-server_listen(server_t * server, const char * host, const char * service)
-{
-    struct addrinfo   hints;
-    struct addrinfo * res_tcp = NULL;
-    struct addrinfo * res_udp = NULL;
-    int               err;
-
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_flags  = AI_PASSIVE;
-
-    // TCP socket
-    if (server->tcp_sockfd > 0)
-    {
-
-        hints.ai_socktype = SOCK_STREAM;
-        if ((err = getaddrinfo(host, service, &hints, &res_tcp)) != 0)
-        {
-            fprintf(stderr, "getaddrinfo (TCP): %s\n", gai_strerror(err));
-            return -1;
-        }
-
-        if (bind(server->tcp_sockfd, res_tcp->ai_addr, res_tcp->ai_addrlen)
-            < 0)
-        {
-            perror("Could not bind TCP socket to address");
-            freeaddrinfo(res_tcp);
-            return -1;
-        }
-
-        if (listen(server->tcp_sockfd, 10) < 0)
-        {
-            perror("Could not listen on TCP socket");
-            freeaddrinfo(res_tcp);
-            return -1;
-        }
-    }
-
-    // Retrieve the actual port number assigned to the server sockets
-    if (res_tcp != NULL)
-    {
-        get_server_address_info(
-            server->tcp_sockfd, &(server->address), &(server->addr_len));
-        freeaddrinfo(res_tcp);
-    }
-
-    // UDP socket
-    if (server->udp_sockfd > 0)
-    {
-
-        hints.ai_socktype = SOCK_DGRAM;
-
-        if ((err = getaddrinfo(host, service, &hints, &res_udp)) != 0)
-        {
-            fprintf(stderr, "getaddrinfo (UDP): %s\n", gai_strerror(err));
-            return -1;
-        }
-
-        if (bind(server->udp_sockfd, res_udp->ai_addr, res_udp->ai_addrlen)
-            < 0)
-        {
-            perror("Could not bind UDP socket to address");
-            freeaddrinfo(res_tcp);
-            freeaddrinfo(res_udp);
-            return -1;
-        }
-    }
-
-    if (res_udp != NULL)
-    {
-        // Copy the UDP address information to the server structure
-        memcpy(&(server->udp_address), res_udp->ai_addr, res_udp->ai_addrlen);
-        server->udp_addr_len = res_udp->ai_addrlen;
-        freeaddrinfo(res_udp);
-    }
-    print_server_info(server);
-    return 0;
 }
 
 client_t *

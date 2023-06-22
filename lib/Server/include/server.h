@@ -25,7 +25,7 @@ typedef struct client_t
 } client_t;
 
 void       handle_sigint(int sig);
-server_t * server_create(int protocol_flags);
+server_t * server_create(void);
 void       server_destroy(server_t * server);
 int  server_listen(server_t * server, const char * host, const char * port);
 void server_close(server_t * server);
