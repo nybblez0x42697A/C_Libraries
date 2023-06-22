@@ -137,7 +137,7 @@ thpool_worker(void * thpool)
 
         pthread_mutex_unlock(&pool->resource_lock);
 
-        job.functions(pool->pb_should_shutdown, job.p_arguments);
+        job.functions(job.p_arguments);
 
         pthread_mutex_lock(&pool->resource_lock);
         pool->threads_running--;
