@@ -63,7 +63,7 @@ BIN_ARGS :=
 
 #-------- Targets ---------#
 
-all: $(OBJS) $(LIB_BIN) $(BIN) ## Compile all library objects and link them to produce a shared library
+all: $(OBJS) $(BIN) ## Compile all library objects and link them to produce a shared library
 
 ## Build the executable and run tests
 check: $(CHECK)
@@ -73,7 +73,7 @@ clean: ## Clean up the objects and binaries to start a fresh build
 
 debug: CFLAGS += -D__DEBUG__
 debug: clean all ## Run gdb against the executable
-	@gdb --args $(DEBUG_LIBS) $(EXE_ARGS)
+	@gdb --args $(BIN) $(DEBUG_LIBS) $(EXE_ARGS)
 #	@lldb $(DEBUG_LIBS) $(EXE_ARGS)
 
 break: $(BIN) ## Pass /dev/urandom, /dev/null, and /dev/zero as input to the executable. Good for testing garbage input and fixing any edge cases.
@@ -117,14 +117,14 @@ $(1).is: %.is: ## Run the original recipe with --ignore-errors and -s to silence
 
 # Directory creation rule
 $(OBJ_DIR) $(BIN_DIR):
-	@mkdir -p $@ > /dev/null
+	@mkdir -p $@
 
 # Add dependencies for object files
 $(OBJS): $(OBJ_DIR)
 # General pattern rule for building object files
 $(OBJS): obj/%.o: src/%.c
-	@mkdir -p $(dir $@) > /dev/null
-	@$(CC) $(CFLAGS) -c $< -fPIC -o $@ $(LIB_FLAGS)
+
+	$(CC) $(CFLAGS) -c $< -o $@ $(LIB_FLAGS)
 	 
 
 # Rule for building shared library
@@ -132,9 +132,9 @@ $(LIB_BIN): LIB_FLAGS += -D_MAIN_EXCLUDED
 $(LIB_BIN): %.so: $(OBJS) $(BIN_DIR)
 	@$(CC) $(CFLAGS) -shared $< -o $@ $(LIB_FLAGS)
 
-$(BIN): $(filter-out $(wildcard *.so), $(OBJS))
+$(BIN): $(filter-out $(wildcard *.so), $(OBJS)) | $(BIN_DIR)
 
-	@$(CC) $(CFLAGS) $^ -o $@ $(LIB_FLAGS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LIB_FLAGS)
 
 $(CHECK): $(TST_OBJS) $(LIB_OBJS)
 

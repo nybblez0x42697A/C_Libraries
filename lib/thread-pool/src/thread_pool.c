@@ -32,31 +32,54 @@ typedef struct threadpool
     job_queue_t *   p_job_queue;
 } threadpool_t;
 
+
 void * thpool_worker(void * pool);
+
 
 threadpool_t *
 thpool_init(int num_threads)
 {
     threadpool_t * pool = calloc(1, sizeof(threadpool_t));
+    int error = 0;
     if (!pool)
     {
         perror("Failed to allocate memory for threadpool_t");
-        return NULL;
+        error = 1;
+        goto ERROR;
     }
+
+    int queue_size = (num_threads * 3);
 
     pool->threads_in_pool = num_threads;
     pool->thread_capacity = num_threads;
 
-    pool->p_thread_object    = calloc(num_threads, sizeof(pthread_t));
-    pool->p_job_queue        = calloc(num_threads, sizeof(job_queue_t));
-    pool->pb_should_shutdown = calloc(1, sizeof(_Atomic bool));
-    pool->pb_should_pause    = calloc(1, sizeof(_Atomic bool));
-
-    if (!(pool->p_thread_object) || !(pool->p_job_queue)
-        || !(pool->pb_should_shutdown) || !(pool->pb_should_pause))
+    pool->p_thread_object    = calloc(queue_size, sizeof(pthread_t));
+    if (!(pool->p_thread_object))
     {
-        perror("Failed to allocate memory for thread objects or job queue");
-        return NULL;
+        perror("Failed to allocate memory for thread objects");
+        error = 1;
+        goto ERROR;
+    }
+    pool->p_job_queue        = calloc(queue_size, sizeof(job_queue_t));
+    if (!(pool->p_job_queue))
+    {
+        perror("Failed to allocate memory for job queue");
+        error = 1;
+        goto ERROR;
+    }
+    pool->pb_should_shutdown = calloc(1, sizeof(_Atomic bool));
+    if (!(pool->pb_should_shutdown))
+    {
+        perror("Failed to allocate memory for shutdown flag");
+        error = 1;
+        goto ERROR;
+    }
+    pool->pb_should_pause    = calloc(1, sizeof(_Atomic bool));
+    if (!(pool->pb_should_pause))
+    {
+        perror("Failed to allocate memory for pause flag");
+        error = 1;
+        goto ERROR;
     }
 
     pthread_mutex_init(&pool->resource_lock, NULL);
@@ -70,6 +93,31 @@ thpool_init(int num_threads)
             &pool->p_thread_object[idx], NULL, thpool_worker, (void *)pool);
     }
 
+ERROR:
+    if (error)
+    {
+        if (pool)
+        {
+            if (pool->p_thread_object)
+            {
+                free(pool->p_thread_object);
+            }
+            if (pool->p_job_queue)
+            {
+                free(pool->p_job_queue);
+            }
+            if (pool->pb_should_shutdown)
+            {
+                free(pool->pb_should_shutdown);
+            }
+            if (pool->pb_should_pause)
+            {
+                free(pool->pb_should_pause);
+            }
+            free(pool);
+        }
+            pool = NULL;
+    }
     return pool;
 }
 
@@ -95,7 +143,7 @@ thpool_add_work(threadpool_t * pool, job_f function, void * arg)
     pool->job_queue_rear = (pool->job_queue_rear + 1) % pool->threads_in_pool;
     pool->jobs_in_queue++;
 
-    pthread_cond_broadcast(&pool->notify_threads);
+    pthread_cond_signal(&pool->notify_threads);
     pthread_mutex_unlock(&pool->resource_lock);
 
     return 0;
@@ -105,10 +153,10 @@ void *
 thpool_worker(void * thpool)
 {
     threadpool_t * pool = (threadpool_t *)thpool;
-    while (!(*pool->pb_should_shutdown))
+    for (;;)
     {
-        pthread_mutex_lock(&pool->resource_lock);
 
+        pthread_mutex_lock(&pool->resource_lock);
         while ((*pool->pb_should_pause || pool->jobs_in_queue == 0)
                && !(*pool->pb_should_shutdown))
         {
@@ -304,9 +352,7 @@ void
 safe_printf(void * format)
 {
 
-    pthread_mutex_t print_lock;
-
-    pthread_mutex_init(&print_lock, NULL);
+    static pthread_mutex_t print_lock = PTHREAD_MUTEX_INITIALIZER;
 
     // Lock
     pthread_mutex_lock(&print_lock);
@@ -316,7 +362,7 @@ safe_printf(void * format)
 
     // Unlock
     pthread_mutex_unlock(&print_lock);
-    pthread_mutex_destroy(&print_lock);
+
 }
 
 int
@@ -331,7 +377,7 @@ main()
     }
 
     // Add some jobs to the pool.
-    const char * names[] = { "Alice", "Bob", "Charlie", "Dave" };
+    _Atomic char * names[] = { (_Atomic char *)"Alice", (_Atomic char *)"Bob", (_Atomic char *)"Charlie", (_Atomic char *)"Dave" };
     for (int idx = 0; idx < 4; idx++)
     {
         if (thpool_add_work(pool, safe_printf, (void *)names[idx]) != 0)
@@ -347,6 +393,8 @@ main()
 
     // Shutdown the thread pool.
     thpool_shutdown(pool);
+
+
 
     return 0;
 }
